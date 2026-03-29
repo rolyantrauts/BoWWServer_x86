@@ -1,0 +1,18 @@
+server:
+  temp_dir: "/tmp/boww/"
+  dest_dir: "./output/"
+
+groups:
+  - name: "bedroom"
+    sample_rate: 16000
+    channels: 1
+    arbitration_timeout_ms: 200
+    vad_threshold: 0.75
+    vad_no_voice_ms: 2000
+    preroll_seconds: 2.0
+    output: "alsa"       
+    device: "plughw:0,0" 
+
+clients:
+  - guid: "871fb1f9-7ecf-426e-a5ce-a6ad67cfdd72"
+    group: "bedroom"
