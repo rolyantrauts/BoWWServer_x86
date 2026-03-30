@@ -110,7 +110,7 @@ namespace boww {
                     if (node["vad_threshold"]) gc.vad_threshold = node["vad_threshold"].as<float>();
                     if (node["arbitration_timeout_ms"]) gc.arbitration_timeout_ms = node["arbitration_timeout_ms"].as<int>();
                     if (node["vad_no_voice_ms"]) gc.vad_no_voice_ms = node["vad_no_voice_ms"].as<int>();
-                    if (node["preroll_seconds"]) gc.preroll_seconds = node["preroll_seconds"].as<float>(); // <-- NEW
+                    if (node["preroll_seconds"]) gc.preroll_seconds = node["preroll_seconds"].as<float>();
 
                     if (node["output"]) {
                         std::string output = node["output"].as<std::string>();
@@ -119,6 +119,22 @@ namespace boww {
                             gc.output_type = OutputType::ALSA;
                             if (node["device"]) gc.output_target = node["device"].as<std::string>();
                         }
+                    }
+
+                    // --- Parse ADSR & Ratio Bouncer Settings ---
+                    if (node["authoritative_wakeword"]) {
+                        auto aww = node["authoritative_wakeword"];
+                        if (aww["enabled"]) gc.auth_ww.enabled = aww["enabled"].as<bool>();
+                        
+                        if (aww["type"]) gc.auth_ww.type = aww["type"].as<std::string>();
+                        if (aww["threshold"]) gc.auth_ww.threshold = aww["threshold"].as<float>();
+                        if (aww["attack"]) gc.auth_ww.attack = aww["attack"].as<int>();
+                        if (aww["hold"]) gc.auth_ww.hold = aww["hold"].as<int>();
+                        if (aww["decay"]) gc.auth_ww.decay = aww["decay"].as<float>();
+                        if (aww["ratio"]) gc.auth_ww.ratio = aww["ratio"].as<float>();
+                        
+                        // Failsafe
+                        gc.auth_ww.hold = std::max(1, gc.auth_ww.hold);
                     }
 
                     if (OnGroupConfigChanged) OnGroupConfigChanged(gc);

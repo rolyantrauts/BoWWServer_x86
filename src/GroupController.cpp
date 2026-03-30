@@ -11,7 +11,7 @@ namespace boww {
         : config_(std::move(config)), server_config_(server_config), tflite_runner_(model_path), alsa_manager_(alsa_manager), debug_mode_(debug_mode),
           sliding_window_(640, 0.0f), clean_window_(640, 0.0f), current_mfccs_(20, 0.0f), vad_averager_(15) 
     {
-        std::cout << "[Group: " << config_.name << "] Initialized with isolated TFLite VAD instance.\n";
+        std::cout << "[Group: " << config_.name << "] Initialized with isolated TFLite instance.\n";
     }
 
     GroupController::~GroupController() {
@@ -21,7 +21,7 @@ namespace boww {
         }
     }
 
-    void GroupController::HandleConfidenceScore(std::shared_ptr<ClientSession> client, float score) {
+    void GroupController::HandleConfidenceScore(std::shared_ptr<ClientSession> client, float score, int frame_count) {
         std::lock_guard<std::mutex> lock(mutex_);
         
         if (state_ == GroupState::IDLE) {
@@ -29,16 +29,21 @@ namespace boww {
             arbitration_start_time_ = std::chrono::steady_clock::now();
             best_candidate_ = client;
             best_score_ = score;
+            best_frame_count_ = frame_count;
+            
             current_candidates_.clear();
             arbitration_buffers_.clear();
             current_candidates_.push_back(client);
-            std::cout << "[Group: " << config_.name << "] Candidate: " << client->GetID() << " Score: " << score << "\n";
+            
+            std::cout << "[Group: " << config_.name << "] Candidate: " << client->GetID() 
+                      << " Score: " << score << " (Frames: " << frame_count << ")\n";
             std::cout << "[Group: " << config_.name << "] Arbitration started.\n";
         } else if (state_ == GroupState::ARBITRATING) {
             current_candidates_.push_back(client);
             if (score > best_score_) {
                 best_candidate_ = client;
                 best_score_ = score;
+                best_frame_count_ = frame_count;
             }
         }
     }
@@ -73,7 +78,6 @@ namespace boww {
                     best_candidate_->UpdateLastVoiceTime();
                 }
 
-                // <--- NEW: Print Throttler to save CPU on SSH redrawing
                 static int print_throttle = 0;
                 if (debug_mode_ && update_session) {
                     if (++print_throttle % 5 == 0) {
@@ -85,6 +89,136 @@ namespace boww {
                 }
             }
         }
+    }
+    
+    // --- NEW: Supports "ratio", "leading", and "average" modes ---
+    bool GroupController::ValidateAuthoritativeWakeword(const std::vector<int16_t>& pcm_buffer, int client_frame_count) {
+        if (!config_.auth_ww.enabled) return true; 
+        
+        std::cout << "[Group: " << config_.name << "] Verifying pre-roll buffer (Mode: " << config_.auth_ww.type << ")...\n";
+        
+        const int HOP_STEP = 320;
+        const int TF_FRAME_LENGTH = 640;
+        
+        std::vector<float> test_sliding_window(640, 0.0f);
+        std::vector<float> test_clean_window(640, 0.0f);
+        std::vector<float> test_mfccs(20, 0.0f);
+        
+        tflite_runner_.reset_states();
+        
+        // --- 1. pure 'Ratio' Mode ---
+        if (config_.auth_ww.type == "ratio") {
+            int above_threshold_count = 0;
+            
+            for (size_t i = 0; i < pcm_buffer.size(); i += HOP_STEP) {
+                if (i + HOP_STEP > pcm_buffer.size()) break;
+
+                std::vector<float> hop_in(HOP_STEP);
+                for (int j = 0; j < HOP_STEP; ++j) hop_in[j] = static_cast<float>(pcm_buffer[i + j]) / 32768.0f;
+
+                std::memmove(test_sliding_window.data(), test_sliding_window.data() + HOP_STEP, (TF_FRAME_LENGTH - HOP_STEP) * sizeof(float));
+                std::memcpy(test_sliding_window.data() + (TF_FRAME_LENGTH - HOP_STEP), hop_in.data(), HOP_STEP * sizeof(float));
+
+                float sum = 0.0f;
+                for (float f : test_sliding_window) sum += f;
+                float mean = sum / TF_FRAME_LENGTH;
+                for (int j = 0; j < TF_FRAME_LENGTH; ++j) test_clean_window[j] = test_sliding_window[j] - mean;
+
+                feature_extractor_.compute_mfcc_features(test_clean_window, test_mfccs);
+                std::vector<float> scores = tflite_runner_.infer(test_mfccs);
+
+                float raw_prob = scores.empty() ? 0.0f : scores[0]; 
+                
+                if (raw_prob >= config_.auth_ww.threshold) {
+                    above_threshold_count++;
+                }
+            }
+            
+            tflite_runner_.reset_states();
+            
+            float calc_ratio = (client_frame_count > 0) ? (static_cast<float>(above_threshold_count) / client_frame_count) : 0.0f;
+            
+            if (debug_mode_) {
+                std::cout << "[Group: " << config_.name << "] Ratio Check: " << above_threshold_count 
+                          << " passing frames / " << client_frame_count << " client frames = " 
+                          << calc_ratio << " (Target: " << config_.auth_ww.ratio << ")\n";
+            }
+            
+            return (calc_ratio >= config_.auth_ww.ratio);
+        }
+        
+        // --- 2. ADSR Envelopes ("leading" or "average") ---
+        WindowAverager test_averager(config_.auth_ww.hold);
+        
+        int attack_counter = 0;
+        float smoothed_peak = 0.0f;
+        int current_frame_count = 0;
+        bool was_armed = false;
+        bool passed_validation = false;
+
+        for (size_t i = 0; i < pcm_buffer.size(); i += HOP_STEP) {
+            if (i + HOP_STEP > pcm_buffer.size()) break;
+
+            std::vector<float> hop_in(HOP_STEP);
+            for (int j = 0; j < HOP_STEP; ++j) hop_in[j] = static_cast<float>(pcm_buffer[i + j]) / 32768.0f;
+
+            std::memmove(test_sliding_window.data(), test_sliding_window.data() + HOP_STEP, (TF_FRAME_LENGTH - HOP_STEP) * sizeof(float));
+            std::memcpy(test_sliding_window.data() + (TF_FRAME_LENGTH - HOP_STEP), hop_in.data(), HOP_STEP * sizeof(float));
+
+            float sum = 0.0f;
+            for (float f : test_sliding_window) sum += f;
+            float mean = sum / TF_FRAME_LENGTH;
+            for (int j = 0; j < TF_FRAME_LENGTH; ++j) test_clean_window[j] = test_sliding_window[j] - mean;
+
+            feature_extractor_.compute_mfcc_features(test_clean_window, test_mfccs);
+            std::vector<float> scores = tflite_runner_.infer(test_mfccs);
+
+            float raw_prob = scores.empty() ? 0.0f : scores[0]; 
+            float smoothed_prob = 0.0f;
+            test_averager.process(raw_prob, smoothed_prob);
+
+            if (!was_armed) {
+                if (raw_prob >= config_.auth_ww.threshold) {
+                    attack_counter++;
+                    if (attack_counter >= config_.auth_ww.attack) {
+                        was_armed = true;
+                        smoothed_peak = smoothed_prob;
+                        current_frame_count = attack_counter;
+                    }
+                } else {
+                    attack_counter = 0;
+                }
+            } 
+            else { // ARMED
+                current_frame_count++;
+                if (smoothed_prob > smoothed_peak) smoothed_peak = smoothed_prob;
+                
+                bool should_release = false;
+                
+                if (config_.auth_ww.type == "leading") {
+                    float release_threshold = std::max(0.05f, smoothed_peak - config_.auth_ww.decay);
+                    if (smoothed_prob <= release_threshold) should_release = true;
+                } else if (config_.auth_ww.type == "average") {
+                    if (smoothed_peak >= config_.auth_ww.threshold) {
+                        if (smoothed_prob < (config_.auth_ww.threshold - config_.auth_ww.decay)) should_release = true;
+                    } else if (current_frame_count >= config_.auth_ww.hold) {
+                        should_release = true; 
+                    }
+                }
+
+                if (should_release) {
+                    if (config_.auth_ww.type == "leading") {
+                        passed_validation = true; 
+                    } else if (config_.auth_ww.type == "average" && smoothed_peak >= config_.auth_ww.threshold) {
+                        passed_validation = true;
+                    }
+                    break; // Validation finished (either pass or fail). Exit the loop.
+                }
+            }
+        }
+        
+        tflite_runner_.reset_states(); // Wipe memory for the real VAD loop
+        return passed_validation;
     }
 
     void GroupController::HandleAudioStream(std::shared_ptr<ClientSession> client, std::vector<int16_t>& pcm_data) {
@@ -115,6 +249,28 @@ namespace boww {
             
             if (elapsed >= config_.arbitration_timeout_ms) {
                 if (best_candidate_) {
+                    
+                    // --- Intercept and run the Authoritative Check with the reported frames ---
+                    bool passed_auth_check = true;
+                    if (arbitration_buffers_.count(best_candidate_->GetID())) {
+                        auto& pre_roll = arbitration_buffers_[best_candidate_->GetID()];
+                        passed_auth_check = ValidateAuthoritativeWakeword(pre_roll, best_frame_count_);
+                    }
+                    
+                    if (!passed_auth_check) {
+                        std::cout << "[Group: " << config_.name << "] \xE2\x9D\x8C Authoritative check FAILED. Aborting trigger.\n";
+                        for (auto& candidate : current_candidates_) {
+                            candidate->SendStopSignal(); // Tell everyone to stop streaming
+                        }
+                        current_candidates_.clear();
+                        arbitration_buffers_.clear();
+                        best_candidate_ = nullptr;
+                        state_ = GroupState::IDLE;
+                        return; // Exit completely. Do not open ALSA.
+                    }
+
+                    // --- Check Passed (or Disabled). Proceed normally. ---
+                    std::cout << "[Group: " << config_.name << "] \xE2\x9C\x85 Authoritative check PASSED.\n";
                     active_client_guid_ = best_candidate_->GetID();
                     state_ = GroupState::STREAMING;
                     

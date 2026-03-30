@@ -22,7 +22,6 @@ namespace boww {
         config_manager_.OnGroupConfigChanged = [this](const GroupConfig& config) {
             std::lock_guard<std::mutex> lock(group_mutex_);
             if (groups_.find(config.name) == groups_.end()) {
-                // <--- NEW: Pass the model_path_ string so the Group builds its own TFLiteRunner
                 groups_[config.name] = std::make_shared<GroupController>(
                     config, model_path_, config_manager_.GetServerConfig(), alsa_manager_, debug_mode_
                 );
@@ -163,13 +162,17 @@ namespace boww {
                 }
                 else if (type == Protocol::MSG_CONFIDENCE || type == Protocol::MSG_CONF_REC) {
                     if (!session->IsAuthenticated()) return;
+                    
                     float score = 0.0f;
+                    int frame_count = 0; // <--- Default to 0 for old clients
+                    
                     if (j.contains("score")) score = j["score"]; 
+                    if (j.contains("frame_count")) frame_count = j["frame_count"]; // <--- Extract from JSON
                     
                     std::lock_guard<std::mutex> lock(group_mutex_);
                     auto group_it = groups_.find(session->GetGroup());
                     if (group_it != groups_.end()) {
-                        group_it->second->HandleConfidenceScore(session, score);
+                        group_it->second->HandleConfidenceScore(session, score, frame_count); // <--- Pass it down
                     }
                 }
             } catch (...) {}
