@@ -43,11 +43,10 @@ namespace boww {
 
     class GroupController {
     public:
-        // <--- NEW: Takes std::string model_path directly
         GroupController(GroupConfig config, std::string model_path, ServerConfig server_config, AlsaSinkManager& alsa_manager, bool debug_mode = false);
         ~GroupController(); 
 
-        void HandleConfidenceScore(std::shared_ptr<ClientSession> session, float score);
+        void HandleConfidenceScore(std::shared_ptr<ClientSession> session, float score, int frame_count); 
         void HandleAudioStream(std::shared_ptr<ClientSession> session, std::vector<int16_t>& pcm_data); 
         void OnTick();
         
@@ -56,7 +55,7 @@ namespace boww {
     private:
         GroupConfig config_;
         ServerConfig server_config_;
-        TFLiteRunner tflite_runner_; // <--- NEW: Instance, not reference! Every group gets its own brain.
+        TFLiteRunner tflite_runner_; 
         FeatureExtractor feature_extractor_;
         AlsaSinkManager& alsa_manager_;
         bool debug_mode_;
@@ -75,6 +74,7 @@ namespace boww {
         
         std::shared_ptr<ClientSession> best_candidate_ = nullptr;
         float best_score_ = 0.0f;
+        int best_frame_count_ = 0; 
         std::string active_client_guid_ = "";
         
         std::vector<std::shared_ptr<ClientSession>> current_candidates_;
@@ -87,5 +87,8 @@ namespace boww {
         nlohmann::json current_metadata_;
 
         void ProcessVADFrames(const std::vector<int16_t>& pcm_data, bool update_session);
+        
+        // --- NEW: Accept client frame count for the 'ratio' calculation ---
+        bool ValidateAuthoritativeWakeword(const std::vector<int16_t>& pcm_buffer, int client_frame_count);
     };
 }

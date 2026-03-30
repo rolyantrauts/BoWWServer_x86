@@ -10,7 +10,7 @@ namespace boww {
 
     namespace Protocol {
         const std::string MSG_HELLO = "hello";           
-        const std::string MSG_HELLO_ACK = "hello_ack"; // <-- NEW
+        const std::string MSG_HELLO_ACK = "hello_ack"; 
         const std::string MSG_ENROLL = "enroll";                 
         const std::string MSG_ASSIGN_TEMP_ID = "assign_temp_id"; 
         const std::string MSG_CONFIDENCE = "confidence"; 
@@ -27,6 +27,17 @@ namespace boww {
         std::string dest_dir = "./output/";
     };
 
+    // --- NEW: ADSR & Ratio Authoritative Bouncer Parameters ---
+    struct AuthoritativeWakewordConfig {
+        bool enabled = false;    
+        std::string type = "leading"; // "leading", "average", or "ratio"
+        float threshold = 0.90f; 
+        int attack = 4;         
+        int hold = 20;           
+        float decay = 0.20f;     
+        float ratio = 0.50f;     // Used only in "ratio" mode
+    };
+
     struct GroupConfig {
         std::string name;
         int sample_rate = DEFAULT_SAMPLE_RATE;
@@ -35,10 +46,12 @@ namespace boww {
         float vad_threshold = 0.5f; 
         int arbitration_timeout_ms = 200;
         int vad_no_voice_ms = 1000;
-        float preroll_seconds = 2.0f; // <-- NEW
+        float preroll_seconds = 2.0f; 
         OutputType output_type = OutputType::FILE;
         std::string output_target; 
         bool fallback_to_file_on_busy = true;
+
+        AuthoritativeWakewordConfig auth_ww; 
     };
 
     struct ClientInfo {
