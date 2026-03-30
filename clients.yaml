@@ -12,6 +12,11 @@ groups:
     preroll_seconds: 2.0
     output: "alsa"       
     device: "plughw:0,0" 
+    authoritative_wakeword:
+      enabled: true
+      type: "ratio"      # 'ratio', 'leading', or 'average'
+      threshold: 0.90    # The F32 model's raw probability must hit 90% to count as a "hit"
+      ratio: 0.50        # The server hits must equal at least 50% of the client's total frames
 
 clients:
   - guid: "871fb1f9-7ecf-426e-a5ce-a6ad67cfdd72"
